@@ -100,18 +100,144 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Data Loading ─────────────────────────────────────────────────────────────
+# ── Data Generation (fully inlined — no external files needed) ───────────────
 @st.cache_data
 def load_data():
-    try:
-        df = pd.read_csv("myntra_data.csv", parse_dates=["purchase_date", "date_of_return"])
-    except:
-        import subprocess
-        subprocess.run(["python", "generate_data.py"], check=True)
-        df = pd.read_csv("myntra_data.csv", parse_dates=["purchase_date", "date_of_return"])
+    import os
+    if os.path.exists("myntra_data.csv"):
+        return pd.read_csv("myntra_data.csv", parse_dates=["purchase_date", "date_of_return"])
+    return generate_synthetic_data()
+
+@st.cache_data
+def generate_synthetic_data():
+    from datetime import datetime, timedelta
+
+    np.random.seed(42)
+    N = 5000
+
+    PRODUCTS = [
+        "Ethnic Kurta", "Denim Jeans", "Casual T-Shirt", "Formal Shirt",
+        "Saree", "Lehenga", "Sneakers", "Heels", "Flats", "Sports Shoes",
+        "Handbag", "Wallet", "Sunglasses", "Watch", "Jacket",
+        "Hoodie", "Palazzo Pants", "Maxi Dress", "Crop Top", "Blazer"
+    ]
+    CATEGORIES = {
+        "Ethnic Kurta": "Ethnic Wear", "Saree": "Ethnic Wear", "Lehenga": "Ethnic Wear",
+        "Denim Jeans": "Western Wear", "Casual T-Shirt": "Western Wear", "Formal Shirt": "Western Wear",
+        "Jacket": "Western Wear", "Hoodie": "Western Wear", "Palazzo Pants": "Western Wear",
+        "Maxi Dress": "Western Wear", "Crop Top": "Western Wear", "Blazer": "Western Wear",
+        "Sneakers": "Footwear", "Heels": "Footwear", "Flats": "Footwear", "Sports Shoes": "Footwear",
+        "Handbag": "Accessories", "Wallet": "Accessories", "Sunglasses": "Accessories", "Watch": "Accessories"
+    }
+    RETURN_REASONS = [
+        "Size Mismatch", "Quality Issue", "Wrong Item Delivered",
+        "Color Difference", "Damaged Product", "Changed Mind",
+        "Better Price Found", "Fit Issue", "Fabric Issue", "Late Delivery"
+    ]
+    CITIES = ["Mumbai", "Delhi", "Bangalore", "Chennai", "Hyderabad",
+              "Pune", "Kolkata", "Ahmedabad", "Jaipur", "Lucknow"]
+    BASE_PRICES = {
+        "Ethnic Kurta": 899, "Denim Jeans": 1499, "Casual T-Shirt": 499,
+        "Formal Shirt": 1299, "Saree": 2499, "Lehenga": 4999,
+        "Sneakers": 1999, "Heels": 2499, "Flats": 1299, "Sports Shoes": 2999,
+        "Handbag": 3499, "Wallet": 999, "Sunglasses": 1499, "Watch": 4999,
+        "Jacket": 2999, "Hoodie": 1799, "Palazzo Pants": 899, "Maxi Dress": 1999,
+        "Crop Top": 699, "Blazer": 3499
+    }
+    RETURN_PROB_BASE = {
+        "Ethnic Wear": 0.38, "Western Wear": 0.35,
+        "Footwear": 0.40, "Accessories": 0.22
+    }
+    SALE_DATES = [
+        (datetime(2023, 6, 1), datetime(2023, 6, 10)),
+        (datetime(2023, 12, 15), datetime(2023, 12, 25)),
+        (datetime(2024, 6, 1), datetime(2024, 6, 10)),
+    ]
+
+    base_date = datetime(2023, 1, 1)
+    customer_ids = [f"CUST{str(i).zfill(5)}" for i in range(1, 1001)]
+    customer_pool = np.random.choice(customer_ids, N)
+
+    purchase_dates = [base_date + timedelta(days=int(d)) for d in np.random.randint(0, 730, N)]
+    products = np.random.choice(PRODUCTS, N)
+    categories = [CATEGORIES[p] for p in products]
+    quantities = np.random.choice([1, 2, 3, 4, 5], N, p=[0.55, 0.25, 0.1, 0.05, 0.05])
+    discount_pct = np.random.choice([0, 10, 20, 30, 40, 50, 60, 70], N,
+                                     p=[0.05, 0.1, 0.15, 0.2, 0.2, 0.15, 0.1, 0.05])
+    ratings = np.random.choice([1, 2, 3, 4, 5], N, p=[0.08, 0.12, 0.20, 0.35, 0.25])
+
+    amounts = [round(BASE_PRICES[products[i]] * quantities[i] * (1 - discount_pct[i]/100), 2) for i in range(N)]
+
+    return_requested = np.array([
+        int(np.random.binomial(1, min(
+            RETURN_PROB_BASE[categories[i]] * (1 + (discount_pct[i]/100)*0.5) * (1 + (3-ratings[i])*0.1),
+            0.85
+        ))) for i in range(N)
+    ])
+
+    return_reasons = [np.random.choice(RETURN_REASONS) if return_requested[i] else None for i in range(N)]
+
+    date_of_return = [
+        purchase_dates[i] + timedelta(days=int(np.random.randint(1, 30))) if return_requested[i] else None
+        for i in range(N)
+    ]
+    quantity_returned = [
+        int(np.random.randint(1, int(quantities[i]) + 1)) if return_requested[i] else 0
+        for i in range(N)
+    ]
+    amount_returned = [
+        round((amounts[i] / quantities[i]) * quantity_returned[i], 2) if return_requested[i] else 0.0
+        for i in range(N)
+    ]
+    cities = np.random.choice(CITIES, N)
+    is_sale_period = [
+        int(any(s <= purchase_dates[i] <= e for s, e in SALE_DATES)) for i in range(N)
+    ]
+
+    # RFM per customer
+    customer_rfm = {}
+    for cust in customer_ids:
+        recency = int(np.random.randint(1, 365))
+        frequency = int(np.random.randint(1, 20))
+        monetary = int(np.random.randint(500, 50000))
+        r_score = 5 - min(4, recency // 73)
+        f_score = min(5, frequency // 4 + 1)
+        m_score = min(5, monetary // 10000 + 1)
+        rfm = r_score + f_score + m_score
+        if rfm >= 12: seg = "Champions"
+        elif rfm >= 9: seg = "Loyal Customers"
+        elif rfm >= 6: seg = "At Risk"
+        elif rfm >= 4: seg = "New Customers"
+        else: seg = "Lost Customers"
+        customer_rfm[cust] = {"recency": recency, "frequency": frequency,
+                               "monetary": monetary, "rfm_score": rfm, "segment": seg}
+
+    df = pd.DataFrame({
+        "customer_id": customer_pool,
+        "purchase_date": pd.to_datetime(purchase_dates),
+        "product": products,
+        "category": categories,
+        "quantity": quantities,
+        "amount": amounts,
+        "discount_pct": discount_pct,
+        "is_sale_period": is_sale_period,
+        "return_requested": return_requested,
+        "return_reason": return_reasons,
+        "date_of_return": pd.to_datetime(date_of_return),
+        "quantity_returned": quantity_returned,
+        "amount_returned": amount_returned,
+        "product_rating": ratings,
+        "city": cities,
+        "customer_segment": [customer_rfm[c]["segment"] for c in customer_pool],
+        "rfm_score": [customer_rfm[c]["rfm_score"] for c in customer_pool],
+        "recency_days": [customer_rfm[c]["recency"] for c in customer_pool],
+        "purchase_frequency": [customer_rfm[c]["frequency"] for c in customer_pool],
+        "total_spend": [customer_rfm[c]["monetary"] for c in customer_pool],
+    })
+    df["year_month"] = df["purchase_date"].dt.to_period("M").astype(str)
     return df
 
-df_raw = load_data()
+df_raw = generate_synthetic_data()
 
 # ── Sidebar Filters ──────────────────────────────────────────────────────────
 st.sidebar.markdown("## 🛍️ Myntra Analytics")
